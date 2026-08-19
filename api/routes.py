@@ -6,10 +6,20 @@ import os
 api_bp = Blueprint("api", __name__)
 
 
+def _get_db():
+    db_config = current_app.config.get("DATABASE_URL") or current_app.config.get("DATABASE_PATH")
+    return get_db_connection(db_config)
+
+
 @api_bp.route("/notes", methods=["GET"])
 def get_notes():
-    conn = get_db_connection(current_app.config["DATABASE_PATH"])
-    notes = conn.execute("SELECT id, title, body, filename, created_at FROM notes ORDER BY created_at DESC").fetchall()
+    conn = _get_db()
+    if conn.is_postgres:
+        cur = conn.conn.cursor()
+        cur.execute("SELECT id, title, body, filename, created_at FROM notes ORDER BY created_at DESC")
+        notes = cur.fetchall()
+    else:
+        notes = conn.execute("SELECT id, title, body, filename, created_at FROM notes ORDER BY created_at DESC").fetchall()
     conn.close()
     return jsonify([dict(note) for note in notes])
 
@@ -26,23 +36,38 @@ def create_note():
         destination = os.path.join(current_app.config["UPLOAD_FOLDER"], filename)
         uploaded_file.save(destination)
 
-    conn = get_db_connection(current_app.config["DATABASE_PATH"])
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO notes (title, body, filename) VALUES (?, ?, ?)",
-        (title, body, filename),
-    )
-    conn.commit()
-    note_id = cursor.lastrowid
-    conn.close()
+    conn = _get_db()
+    if conn.is_postgres:
+        cur = conn.conn.cursor()
+        cur.execute(
+            "INSERT INTO notes (title, body, filename) VALUES (%s, %s, %s) RETURNING id",
+            (title, body, filename),
+        )
+        note_id = cur.fetchone()["id"]
+        conn.commit()
+        conn.close()
+    else:
+        cursor = conn.conn.cursor()
+        cursor.execute(
+            "INSERT INTO notes (title, body, filename) VALUES (?, ?, ?)",
+            (title, body, filename),
+        )
+        conn.commit()
+        note_id = cursor.lastrowid
+        conn.close()
 
     return jsonify({"id": note_id, "title": title, "body": body, "filename": filename}), 201
 
 
 @api_bp.route("/notes/<int:note_id>", methods=["GET"])
 def get_note(note_id):
-    conn = get_db_connection(current_app.config["DATABASE_PATH"])
-    note = conn.execute("SELECT id, title, body, filename, created_at FROM notes WHERE id = ?", (note_id,)).fetchone()
+    conn = _get_db()
+    if conn.is_postgres:
+        cur = conn.conn.cursor()
+        cur.execute("SELECT id, title, body, filename, created_at FROM notes WHERE id = %s", (note_id,))
+        note = cur.fetchone()
+    else:
+        note = conn.execute("SELECT id, title, body, filename, created_at FROM notes WHERE id = ?", (note_id,)).fetchone()
     conn.close()
     if note is None:
         return jsonify({"error": "Note not found"}), 404
@@ -51,12 +76,19 @@ def get_note(note_id):
 
 @api_bp.route("/notes/<int:note_id>", methods=["DELETE"])
 def delete_note(note_id):
-    conn = get_db_connection(current_app.config["DATABASE_PATH"])
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-    conn.commit()
-    deleted = cursor.rowcount
+    conn = _get_db()
+    if conn.is_postgres:
+        cur = conn.conn.cursor()
+        cur.execute("DELETE FROM notes WHERE id = %s", (note_id,))
+        conn.commit()
+        deleted = cur.rowcount
+    else:
+        cursor = conn.conn.cursor()
+        cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        conn.commit()
+        deleted = cursor.rowcount
     conn.close()
     if deleted == 0:
         return jsonify({"error": "Note not found"}), 404
     return jsonify({"message": "Note deleted"}), 200
+

@@ -1,0 +1,14 @@
+[Unit]
+Description=CloudNotes v1.0 Managed Service
+After=network.target postgresql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/var/www/cloudnotes-v1
+EnvironmentFile=/var/www/cloudnotes-v1/.env
+ExecStart=/var/www/cloudnotes-v1/.venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 3 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
